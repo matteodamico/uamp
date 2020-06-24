@@ -18,17 +18,12 @@ package com.example.android.uamp.media
 
 import android.app.Notification
 import android.app.PendingIntent
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.media.AudioManager
 import android.net.Uri
 import android.os.Bundle
 import android.support.v4.media.MediaBrowserCompat
 import android.support.v4.media.MediaBrowserCompat.MediaItem
 import android.support.v4.media.MediaDescriptionCompat
-import android.support.v4.media.session.MediaControllerCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.util.Log
 import android.widget.Toast
@@ -44,8 +39,8 @@ import com.example.android.uamp.media.library.UAMP_EMPTY_ROOT
 import com.google.android.exoplayer2.C
 import com.google.android.exoplayer2.ExoPlaybackException
 import com.google.android.exoplayer2.ExoPlayer
-import com.google.android.exoplayer2.ExoPlayerFactory
 import com.google.android.exoplayer2.Player
+import com.google.android.exoplayer2.SimpleExoPlayer
 import com.google.android.exoplayer2.Timeline
 import com.google.android.exoplayer2.audio.AudioAttributes
 import com.google.android.exoplayer2.ext.mediasession.MediaSessionConnector
@@ -71,7 +66,7 @@ import kotlinx.coroutines.launch
  * visit [https://developer.android.com/guide/topics/media-apps/audio-app/building-a-mediabrowserservice.html](https://developer.android.com/guide/topics/media-apps/audio-app/building-a-mediabrowserservice.html).
  */
 open class MusicService : MediaBrowserServiceCompat() {
-    private lateinit var becomingNoisyReceiver: BecomingNoisyReceiver
+
     private lateinit var notificationManager: UampNotificationManager
     private lateinit var mediaSource: MusicSource
     private lateinit var packageValidator: PackageValidator
@@ -108,8 +103,9 @@ open class MusicService : MediaBrowserServiceCompat() {
      * See [Player.AudioComponent.setAudioAttributes] for details.
      */
     private val exoPlayer: ExoPlayer by lazy {
-        ExoPlayerFactory.newSimpleInstance(this).apply {
+        SimpleExoPlayer.Builder(this).build().apply {
             setAudioAttributes(uAmpAudioAttributes, true)
+            setHandleAudioBecomingNoisy(true)
             addListener(playerListener)
         }
     }
@@ -154,9 +150,6 @@ open class MusicService : MediaBrowserServiceCompat() {
             mediaSession.sessionToken,
             PlayerNotificationListener()
         )
-
-        becomingNoisyReceiver =
-            BecomingNoisyReceiver(context = this, sessionToken = mediaSession.sessionToken)
 
         // The media library is built from a remote JSON file. We'll create the source here,
         // and then use a suspend function to perform the download off the main thread.
@@ -327,7 +320,7 @@ open class MusicService : MediaBrowserServiceCompat() {
         PlayerNotificationManager.NotificationListener {
         override fun onNotificationPosted(
             notificationId: Int,
-            notification: Notification?,
+            notification: Notification,
             ongoing: Boolean
         ) {
             if (ongoing && !isForegroundService) {
@@ -357,7 +350,6 @@ open class MusicService : MediaBrowserServiceCompat() {
                 Player.STATE_BUFFERING,
                 Player.STATE_READY -> {
                     notificationManager.showNotification()
-                    becomingNoisyReceiver.register()
 
                     // If playback is paused we remove the foreground state which allows the
                     // notification to be dismissed. An alternative would be to provide a "close"
@@ -368,37 +360,43 @@ open class MusicService : MediaBrowserServiceCompat() {
                 }
                 else -> {
                     notificationManager.hideNotification()
-                    becomingNoisyReceiver.unregister()
                 }
             }
         }
+
         override fun onPlayerError(error: ExoPlaybackException) {
+            var message = R.string.generic_error;
             when (error.type) {
+                // If the data from MediaSource object could not be loaded the Exoplayer raises
+                // a type_source error.
+                // An error message is printed to UI via Toast message to inform the user.
                 ExoPlaybackException.TYPE_SOURCE -> {
-                    Toast.makeText(
-                        applicationContext,
-                        R.string.error_media_not_found,
-                        Toast.LENGTH_LONG
-                    ).show()
+                    message = R.string.error_media_not_found;
                     Log.e(TAG, "TYPE_SOURCE: " + error.sourceException.message)
                 }
-                ExoPlaybackException.TYPE_RENDERER -> Log.e(
-                    TAG,
-                    "TYPE_RENDERER: " + error.rendererException.message
-                )
-                ExoPlaybackException.TYPE_UNEXPECTED -> Log.e(
-                    TAG,
-                    "TYPE_UNEXPECTED: " + error.unexpectedException.message
-                )
-                ExoPlaybackException.TYPE_OUT_OF_MEMORY -> Log.e(
-                    TAG,
-                    "TYPE_OUT_OF_MEMORY: " + error.outOfMemoryError.message
-                )
-                ExoPlaybackException.TYPE_REMOTE -> Log.e(
-                    TAG,
-                    "TYPE_REMOTE: " + error.message
-                )
+                // If the error occurs in a render component, Exoplayer raises a type_remote error.
+                ExoPlaybackException.TYPE_RENDERER -> {
+                    Log.e(TAG, "TYPE_RENDERER: " + error.rendererException.message)
+                }
+                // If occurs an unexpected RuntimeException Exoplayer raises a type_unexpected error.
+                ExoPlaybackException.TYPE_UNEXPECTED -> {
+                    Log.e(TAG, "TYPE_UNEXPECTED: " + error.unexpectedException.message)
+                }
+                // Occurs when there is a OutOfMemory error.
+                ExoPlaybackException.TYPE_OUT_OF_MEMORY -> {
+                    Log.e(TAG, "TYPE_OUT_OF_MEMORY: " + error.outOfMemoryError.message)
+                }
+                // If the error occurs in a remote component, Exoplayer raises a type_remote error.
+                ExoPlaybackException.TYPE_REMOTE -> {
+                    Log.e(TAG, "TYPE_REMOTE: " + error.message)
+                }
             }
+            Toast.makeText(
+                applicationContext,
+                message,
+                Toast.LENGTH_LONG
+            ).show()
+
         }
     }
 }
@@ -413,42 +411,7 @@ private class UampQueueNavigator(
     private val window = Timeline.Window()
     override fun getMediaDescription(player: Player, windowIndex: Int): MediaDescriptionCompat =
         player.currentTimeline
-            .getWindow(windowIndex, window, true).tag as MediaDescriptionCompat
-}
-
-/**
- * Helper class for listening for when headphones are unplugged (or the audio
- * will otherwise cause playback to become "noisy").
- */
-private class BecomingNoisyReceiver(
-    private val context: Context,
-    sessionToken: MediaSessionCompat.Token
-) : BroadcastReceiver() {
-
-    private val noisyIntentFilter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
-    private val controller = MediaControllerCompat(context, sessionToken)
-
-    private var registered = false
-
-    fun register() {
-        if (!registered) {
-            context.registerReceiver(this, noisyIntentFilter)
-            registered = true
-        }
-    }
-
-    fun unregister() {
-        if (registered) {
-            context.unregisterReceiver(this)
-            registered = false
-        }
-    }
-
-    override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
-            controller.transportControls.pause()
-        }
-    }
+            .getWindow(windowIndex, window).tag as MediaDescriptionCompat
 }
 
 /*
