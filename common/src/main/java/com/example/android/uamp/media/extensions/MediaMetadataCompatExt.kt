@@ -183,6 +183,19 @@ inline var MediaMetadataCompat.Builder.mediaUri: String?
     set(value) {
         putString(MediaMetadataCompat.METADATA_KEY_MEDIA_URI, value)
     }
+inline var MediaMetadataCompat.Builder.art: Bitmap?
+    @Deprecated(NO_GET, level = DeprecationLevel.ERROR)
+    get() = throw IllegalAccessException("Cannot get from MediaMetadataCompat.Builder")
+    set(value) {
+        putBitmap(MediaMetadataCompat.METADATA_KEY_ART, value)
+    }
+
+inline var MediaMetadataCompat.Builder.artUri: String?
+    @Deprecated(NO_GET, level = DeprecationLevel.ERROR)
+    get() = throw IllegalAccessException("Cannot get from MediaMetadataCompat.Builder")
+    set(value) {
+        putString(MediaMetadataCompat.METADATA_KEY_ART_URI, value)
+    }
 
 inline var MediaMetadataCompat.Builder.albumArtUri: String?
     @Deprecated(NO_GET, level = DeprecationLevel.ERROR)
